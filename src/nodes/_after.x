@@ -1,0 +1,4 @@
+#undef XTYPENAME
+#undef XSYMNAME
+#undef XIDNAME
+#undef XDESCRIPTION
