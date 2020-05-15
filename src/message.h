@@ -6,31 +6,31 @@
 #define MAX_ARGS 15
 #define MAX_TAGS 32
 
-enum {
-  MESSAGE_INVALID = 0,
-  MESSAGE_VALID
-};
-
 typedef struct {
-  int state;
+  bool valid;
+
   struct {
     char *key;
     char *value;
   } tags[MAX_TAGS];
-  char *prefix;
+
+  struct {
+    char *servername;
+    char *nick;
+    char *user;
+    char *host;
+  } prefix;
+
   char *command;
-  char *args[15];
+  char *args[MAX_ARGS];
   char *trailing;
+
+  char *_nocapture;
 } Message;
 
 char *dup(const char *s, int len);
+void replace(char **old, char *new);
 Message message_new(char *s);
 void message_free(Message *m);
-void message_set_prefix(Message *m, const char *prefix, int len);
-void message_set_command(Message *m, const char *command, int len);
-void message_set_arg(Message *m, int n, const char *arg, int len);
-void message_set_tag_key(Message *m, int n, const char *key, int len);
-void message_set_tag_value(Message *m, int n, const char *value, int len);
-void message_set_trailing(Message *m, const char *trailing, int len);
 
 #endif

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 #include "message.h"
@@ -11,46 +12,76 @@
 #define HOSTNAME "("HNAME"(\\."HNAME ")*)"
 #define HOST "("ADDRESS"|"HOSTNAME")"
 
+#define NICK "([a-zA-Z][a-zA-Z0-9-\\[\\]\\\\\\`\\^\\{\\}]*)"
+
 static PCRE2_SPTR regex_pattern = (PCRE2_SPTR)
-  "(?<tags>@"
+  "^"
+
+  // Tags
+  "(@(?<tags>"
     "(?<tag>(?<=[;@])"
       "(?<key>"
-        "(\\+(?<vendor>"HOST"/))?"
+        "(\\+(?<key_vendor>"HOST"/))?"
         "(?<key_name>[0-9a-zA-Z-]+)"
       ")="
-      "(?<value>[^; ]*)"
+      "(?<key_value>[^; ]*)"
     "[; ])+"
-  ")"
+  "))?"
+
+  // Prefix
+  "(:(?<prefix>"
+    "("
+      "(?<prefix_nick>"NICK")"
+      "(!(?<prefix_user>[^@ ]+))?"
+      "(@(?<prefix_host>"HOST"))?"
+    ")"
+    "|(?<prefix_servername>"HOST")"
+  ") )?"
+  
+  // Command, arguments and trailing
+  "((?<command>([a-zA-Z]+)|([0-9]{3}))(\\s+|$))"
+  "((?<argument>[^:]\\S+)\\s+|$)*"
+  "(:(?<trailing>.*))?"
+  
+  "$"
 ;
 
 pcre2_code *regex = NULL;
 
+// X(group_name, offset)
 #define GROUPS \
-    X(tags) \
-    X(tag) \
-    X(vendor) \
-    X(key) \
-    X(key_name) \
-    X(value)
-
-
-//#define X(g) int g##_group;
-//GROUPS
-//#undef X
+X(tags, _nocapture) \
+X(tag, _nocapture) \
+X(key, _nocapture) \
+X(key_name, tags[0].key) \
+X(key_vendor, _nocapture) \
+X(key_value, tags[0].value) \
+\
+X(prefix, _nocapture) \
+X(prefix_servername, prefix.servername) \
+X(prefix_nick, prefix.nick) \
+X(prefix_user, prefix.user) \
+X(prefix_host, prefix.host) \
+\
+X(command, command) \
+X(argument, args) \
+X(trailing, trailing)
 
 struct {
   int num;
   char *name;
+  size_t offset;
 } groups[] = {
-#define X(g) { .name=#g },
+#define X(g,o) { .name=#g, .offset=offsetof(Message,o) },
 GROUPS
 #undef X
 };
 
 enum {
-#define X(g) GROUP_##g,
+#define X(g,...) GROUP_##g,
 GROUPS
 #undef X
+NUM_GROUPS
 };
 
 char *dup(const char *s, int len) {
@@ -60,8 +91,15 @@ char *dup(const char *s, int len) {
   return n;
 }
 
+void replace(char **old, char *new) {
+  free(*old);
+  *old = new;
+}
+
 static void compile() {
   if(regex) return;
+
+  printf("%s\n", (char *)regex_pattern);
 
   int errornumber;
   PCRE2_SIZE erroroffset;
@@ -89,16 +127,13 @@ static void compile() {
   for(int i = 0; i < namecount; i++) {
     int num = *(int8_t*)(nametable + nameentrysize*i + 1);
     char *name = nametable + nameentrysize*i + 2;
+    //printf("%s=%d\n", name, num);
     for(int j = 0; j < sizeof(groups) / sizeof(groups[0]); j++) {
       if(strcmp(groups[j].name, name)) continue;
       groups[j].num = num;
       break;
     }
   }
-
-  //for(int i = 0; i < namecount; i++) {
-  //  printf("%s -> %d\n", groups[i].name, groups[i].num);
-  //}
 }
 
 typedef struct {
@@ -110,42 +145,79 @@ typedef struct {
 } NewMessageState;
 
 int callout(pcre2_callout_block *block, void *data) {
+  int group = block->capture_last;
   NewMessageState *state = data;
-  int start = (int)block->offset_vector[block->capture_last*2];
+  int start = (int)block->offset_vector[group*2];
   int len =
-    (int)block->offset_vector[block->capture_last*2+1] -
-    (int)block->offset_vector[block->capture_last*2];
+    (int)block->offset_vector[group*2+1] -
+    (int)block->offset_vector[group*2];
 
-
-  if(
-      state->capture_last == block->capture_last &&
-      state->capture_start == start
-    ) {
-    return 0;
-  }
-
-  state->capture_last = block->capture_last;
+  if(state->capture_last == group && state->capture_start == start) return 0;
+  state->capture_last = group;
   state->capture_start = start;
 
-  if((block->capture_last == groups[GROUP_key_name].num) &&
-    (state->current_tag < MAX_TAGS)) {
+  for(int i = 0; i < NUM_GROUPS; i++) {
+    if(group != groups[i].num) continue;
 
-    if(state->message->tags[state->current_tag].key) state->current_tag++;
-    message_set_tag_key(
-        state->message,
-        state->current_tag,
-        (const char *)block->subject+start,
-        len);
-  } else if((block->capture_last == groups[GROUP_value].num) &&
-    (state->current_tag < MAX_TAGS) &&
-    (len > 0)) {
+    //printf("*** %d %s\n", group, groups[i].name);
+    size_t offset = groups[i].offset;
 
-    message_set_tag_value(
-        state->message,
-        state->current_tag,
-        (const char *)block->subject+start,
-        len);
+    // Adjust for offset into tags array
+    if(group == groups[GROUP_key_name].num || group == groups[GROUP_key_value].num) {
+      if(
+          group == groups[GROUP_key_name].num &&
+          state->current_tag < MAX_TAGS &&
+          state->message->tags[state->current_tag].key) {
+
+        state->current_tag++;
+      }
+      if(state->current_tag >= MAX_TAGS) break;
+      offset += sizeof(state->message->tags[0]) * state->current_tag;
+    }
+
+    // Adjust for offset into args array
+    if(group == groups[GROUP_argument].num) {
+      if(state->current_arg < MAX_ARGS && state->message->args[state->current_arg]) {
+        state->current_arg++;
+      }
+      if(state->current_arg >= MAX_ARGS) break;
+      offset += sizeof(state->message->args[0]) * state->current_arg;
+    }
+
+    replace(
+      (char **)((char *)state->message + offset),
+      dup((const char *)block->subject+start, len));
+    break;
   }
+
+
+
+  // // Tag key
+  // if((group == groups[GROUP_key_name].num) &&
+  //   (state->current_tag < MAX_TAGS)) {
+
+  //   if(state->message->tags[state->current_tag].key) state->current_tag++;
+  //   replace(
+  //       &state->message->tags[state->current_tag].key,
+  //       dup((const char *)block->subject+start, len));
+  // }
+
+  // // Tag value
+  // else if((group == groups[GROUP_value].num) &&
+  //   (state->current_tag < MAX_TAGS) &&
+  //   (len > 0)) {
+
+  //   replace(
+  //       &state->message->tags[state->current_tag].value,
+  //       dup((const char *)block->subject+start, len));
+  // }
+
+  // // Prefix servername
+  // else if(group == groups[GROUP_prefix_servername].num) {
+  //   replace(
+  //       &state->message->prefix.servername,
+  //       dup((const char *)block->subject+start, len));
+  // }
 
   return 0;
 }
@@ -169,53 +241,13 @@ Message message_new(char *s) {
       match_data,
       match_context);
 
-  m.state = MESSAGE_VALID;
+  m.valid = true;
   pcre2_match_data_free(match_data);
   pcre2_match_context_free(match_context);
   return m;
 }
 
 void message_free(Message *m) {
-  free(m->prefix);
-  free(m->command);
-  for(int i = 0; i < MAX_ARGS; i++) free(m->args[i]);
-  free(m->trailing);
   *m = (Message){};
-}
-
-void message_set_prefix(Message *m, const char *prefix, int len) {
-  free(m->prefix);
-  if(len == 0) len = strlen(prefix);
-  m->prefix = dup(prefix, len);
-}
-
-void message_set_command(Message *m, const char *command, int len) {
-  free(m->command);
-  if(len == 0) len = strlen(command);
-  m->command = dup(command, len);
-}
-
-void message_set_arg(Message *m, int n, const char *arg, int len) {
-  free(m->tags[n].key);
-  if(len == 0) len = strlen(arg);
-  m->args[n] = dup(arg, len);
-}
-
-void message_set_tag_key(Message *m, int n, const char *key, int len) {
-  free(m->tags[n].value);
-  if(len == 0) len = strlen(key);
-  m->tags[n].key = dup(key, len);
-}
-
-void message_set_tag_value(Message *m, int n, const char *value, int len) {
-  free(m->args[n]);
-  if(len == 0) len = strlen(value);
-  m->tags[n].value = dup(value, len);
-}
-
-void message_set_trailing(Message *m, const char *trailing, int len) {
-  free(m->trailing);
-  if(len == 0) len = strlen(trailing);
-  m->trailing = dup(trailing, len);
 }
 
