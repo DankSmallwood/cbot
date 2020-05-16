@@ -8,83 +8,90 @@
 #include "message.h"
 
 #define ADDRESS "((\\d{1,3}\\.){3}(\\d{1,3}))"
-#define HNAME "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])*)"
-#define HOSTNAME "("HNAME"(\\."HNAME ")*)"
-#define HOST "("ADDRESS"|"HOSTNAME")"
+#define HNAME "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?)"
+//#define HNAME "([0-9a-zA-Z]+)"
+//#define HOSTNAME "("HNAME"(\\."HNAME")*)"
+#define HOSTNAME HNAME
+//#define HOST "("ADDRESS"|"HOSTNAME")"
+#define HOST HNAME
 
 #define NICK "([a-zA-Z][a-zA-Z0-9-\\[\\]\\\\\\`\\^\\{\\}]*)"
+
+#define CALLOUT_TAG 1
+#define CALLOUT_PREFIX_HOSTONLY 2
+#define CALLOUT_PREFIX 3
+#define CALLOUT_COMMAND 4
+#define CALLOUT_ARGUMENT 5
+#define CALLOUT_TRAILING 6
+
+#define TO_STR(x) TO_STR2(x)
+#define TO_STR2(x) #x
+
+#define CAPTURE_GROUPS \
+X(tag_vendor) \
+X(tag_key) \
+X(tag_value) \
+X(prefix_nick) \
+X(prefix_user) \
+X(prefix_host) \
+X(prefix_hostonly) \
+X(command) \
+X(argument) \
+X(trailing)
+
+struct {
+  char *name;
+  int num;
+} capture_groups[] = {
+#define X(g,...) { .name=#g },
+CAPTURE_GROUPS
+#undef X
+};
+
+enum {
+#define X(g,...) CAPTURE_GROUP_##g,
+CAPTURE_GROUPS
+#undef X
+NUM_CAPTURE_GROUPS
+};
 
 static PCRE2_SPTR regex_pattern = (PCRE2_SPTR)
   "^"
 
   // Tags
-  "(@(?<tags>"
-    "(?<tag>(?<=[;@])"
-      "(?<key>"
-        "(\\+(?<key_vendor>"HOST"/))?"
-        "(?<key_name>[0-9a-zA-Z-]+)"
-      ")="
-      "(?<key_value>[^; ]*)"
-    "[; ])+"
-  "))?"
+  "(@"
+    "((?<=[;@])"
+      "(\\+(?<tag_vendor>"HOST")/)?"
+      "(?<tag_key>[0-9a-zA-Z-]++)"
+      "="
+      "(?<tag_value>[^; ]*+)"
+      "(?C"TO_STR(CALLOUT_TAG)")"
+    "[; ])++"
+  ")?"
 
   // Prefix
-  "(:(?<prefix>"
-    "("
-      "(?<prefix_nick>"NICK")"
-      "(!(?<prefix_user>[^@ ]+))?"
-      "(@(?<prefix_host>"HOST"))?"
-    ")"
-    "|(?<prefix_servername>"HOST")"
-  ") )?"
+  "("
+    "(:(?<prefix_hostonly>[^@! ]++) )(?C"TO_STR(CALLOUT_PREFIX_HOSTONLY)")|"
+    "(:"
+      "(?<prefix_nick>[^@!\\. ]++)"
+      "(!(?<prefix_user>[^@ ]++))?"
+      "(@(?<prefix_host>[^ ]++))?"
+    " (?C"TO_STR(CALLOUT_PREFIX)"))"
+  ")?"
   
   // Command, arguments and trailing
-  "((?<command>([a-zA-Z]+)|([0-9]{3}))(\\s+|$))"
-  "((?<argument>[^:]\\S+)\\s+|$)*"
-  "(:(?<trailing>.*))?"
+  "((?<command>([a-zA-Z]++)|([0-9]++))(?C"TO_STR(CALLOUT_COMMAND)")(\\s++|$))"
+  "((?<argument>[^:]\\S++)(?C"TO_STR(CALLOUT_ARGUMENT)")\\s++|$)*+"
+  "(:(?<trailing>.*+)(?C"TO_STR(CALLOUT_TRAILING)"))?"
   
   "$"
 ;
 
 pcre2_code *regex = NULL;
 
-// X(group_name, offset)
-#define GROUPS \
-X(tags, _nocapture) \
-X(tag, _nocapture) \
-X(key, _nocapture) \
-X(key_name, tags[0].key) \
-X(key_vendor, _nocapture) \
-X(key_value, tags[0].value) \
-\
-X(prefix, _nocapture) \
-X(prefix_servername, prefix.servername) \
-X(prefix_nick, prefix.nick) \
-X(prefix_user, prefix.user) \
-X(prefix_host, prefix.host) \
-\
-X(command, command) \
-X(argument, args) \
-X(trailing, trailing)
-
-struct {
-  int num;
-  char *name;
-  size_t offset;
-} groups[] = {
-#define X(g,o) { .name=#g, .offset=offsetof(Message,o) },
-GROUPS
-#undef X
-};
-
-enum {
-#define X(g,...) GROUP_##g,
-GROUPS
-#undef X
-NUM_GROUPS
-};
-
 char *dup(const char *s, int len) {
+  if(!s || len <= 0) return NULL;
+
   char *n = malloc(len+1);
   strncpy(n,s,len);
   n[len]=0;
@@ -106,7 +113,7 @@ static void compile() {
   regex = pcre2_compile(
       regex_pattern,
       PCRE2_ZERO_TERMINATED,
-      PCRE2_AUTO_CALLOUT | PCRE2_NO_AUTO_CAPTURE,
+      PCRE2_DUPNAMES,
       &errornumber,
       &erroroffset,
       NULL);
@@ -118,106 +125,98 @@ static void compile() {
   }
 
   uint32_t namecount;
-  uint32_t nameentrysize;
-  char *nametable;
   pcre2_pattern_info(regex, PCRE2_INFO_NAMECOUNT, &namecount);
+
+  uint32_t nameentrysize;
   pcre2_pattern_info(regex, PCRE2_INFO_NAMEENTRYSIZE, &nameentrysize);
+
+  char *nametable;
   pcre2_pattern_info(regex, PCRE2_INFO_NAMETABLE, &nametable);
 
   for(int i = 0; i < namecount; i++) {
-    int num = *(int8_t*)(nametable + nameentrysize*i + 1);
+    // TODO: This is really 16-bit, but who has more than 255 named capture groups?
+    int num = *(int8_t *)(nametable + nameentrysize*i + 1);
     char *name = nametable + nameentrysize*i + 2;
-    //printf("%s=%d\n", name, num);
-    for(int j = 0; j < sizeof(groups) / sizeof(groups[0]); j++) {
-      if(strcmp(groups[j].name, name)) continue;
-      groups[j].num = num;
+
+    for(int j = 0; j < NUM_CAPTURE_GROUPS; j++) {
+      if(strcmp(capture_groups[j].name, name)) continue;
+      capture_groups[j].num = num;
       break;
     }
   }
 }
 
 typedef struct {
-  uint32_t capture_last;
-  int capture_start;
   Message *message;
   int current_tag;
   int current_arg;
 } NewMessageState;
 
+
+void get_group(int g, pcre2_callout_block *block, char **start, int *len) {
+  g = capture_groups[g].num;
+  *start = (char *)block->subject+block->offset_vector[g*2];
+  *len = block->offset_vector[g*2+1] - block->offset_vector[g*2];
+}
+
+
 int callout(pcre2_callout_block *block, void *data) {
-  int group = block->capture_last;
   NewMessageState *state = data;
-  int start = (int)block->offset_vector[group*2];
-  int len =
-    (int)block->offset_vector[group*2+1] -
-    (int)block->offset_vector[group*2];
+  char *start;
+  int len;
 
-  if(state->capture_last == group && state->capture_start == start) return 0;
-  state->capture_last = group;
-  state->capture_start = start;
+  switch(block->callout_number) {
+  case CALLOUT_TAG:
+    if(state->current_tag > MAX_TAGS) break;
 
-  for(int i = 0; i < NUM_GROUPS; i++) {
-    if(group != groups[i].num) continue;
+    get_group(CAPTURE_GROUP_tag_key, block, &start, &len);
+    replace(&state->message->tags[state->current_tag].key, dup(start, len));
 
-    //printf("*** %d %s\n", group, groups[i].name);
-    size_t offset = groups[i].offset;
+    get_group(CAPTURE_GROUP_tag_value, block, &start, &len);
+    replace(&state->message->tags[state->current_tag].value, dup(start, len));
 
-    // Adjust for offset into tags array
-    if(group == groups[GROUP_key_name].num || group == groups[GROUP_key_value].num) {
-      if(
-          group == groups[GROUP_key_name].num &&
-          state->current_tag < MAX_TAGS &&
-          state->message->tags[state->current_tag].key) {
+    state->current_tag++;
+    break;
 
-        state->current_tag++;
-      }
-      if(state->current_tag >= MAX_TAGS) break;
-      offset += sizeof(state->message->tags[0]) * state->current_tag;
-    }
+  case CALLOUT_PREFIX_HOSTONLY:
+    get_group(CAPTURE_GROUP_prefix_hostonly, block, &start, &len);
+    replace(&state->message->prefix.host, dup(start, len));
 
-    // Adjust for offset into args array
-    if(group == groups[GROUP_argument].num) {
-      if(state->current_arg < MAX_ARGS && state->message->args[state->current_arg]) {
-        state->current_arg++;
-      }
-      if(state->current_arg >= MAX_ARGS) break;
-      offset += sizeof(state->message->args[0]) * state->current_arg;
-    }
+    break;
 
-    replace(
-      (char **)((char *)state->message + offset),
-      dup((const char *)block->subject+start, len));
+  case CALLOUT_PREFIX:
+    get_group(CAPTURE_GROUP_prefix_nick, block, &start, &len);
+    replace(&state->message->prefix.nick, dup(start, len));
+
+    get_group(CAPTURE_GROUP_prefix_user, block, &start, &len);
+    replace(&state->message->prefix.user, dup(start, len));
+
+    get_group(CAPTURE_GROUP_prefix_host, block, &start, &len);
+    replace(&state->message->prefix.host, dup(start, len));
+
+    break;
+
+  case CALLOUT_COMMAND:
+    get_group(CAPTURE_GROUP_command, block, &start, &len);
+    replace(&state->message->command, dup(start, len));
+
+    break;
+
+  case CALLOUT_ARGUMENT:
+    if(state->current_arg >= MAX_ARGS) break;
+
+    get_group(CAPTURE_GROUP_argument, block, &start, &len);
+    replace(&state->message->args[state->current_arg], dup(start, len));
+    state->current_arg++;
+
+    break;
+
+  case CALLOUT_TRAILING:
+    get_group(CAPTURE_GROUP_trailing, block, &start, &len);
+    replace(&state->message->trailing, dup(start, len));
+
     break;
   }
-
-
-
-  // // Tag key
-  // if((group == groups[GROUP_key_name].num) &&
-  //   (state->current_tag < MAX_TAGS)) {
-
-  //   if(state->message->tags[state->current_tag].key) state->current_tag++;
-  //   replace(
-  //       &state->message->tags[state->current_tag].key,
-  //       dup((const char *)block->subject+start, len));
-  // }
-
-  // // Tag value
-  // else if((group == groups[GROUP_value].num) &&
-  //   (state->current_tag < MAX_TAGS) &&
-  //   (len > 0)) {
-
-  //   replace(
-  //       &state->message->tags[state->current_tag].value,
-  //       dup((const char *)block->subject+start, len));
-  // }
-
-  // // Prefix servername
-  // else if(group == groups[GROUP_prefix_servername].num) {
-  //   replace(
-  //       &state->message->prefix.servername,
-  //       dup((const char *)block->subject+start, len));
-  // }
 
   return 0;
 }
@@ -248,6 +247,21 @@ Message message_new(char *s) {
 }
 
 void message_free(Message *m) {
+  for(int i = 0; i < MAX_TAGS; i++) {
+    free(m->tags[i].key);
+    free(m->tags[i].value);
+  }
+
+  free(m->prefix.nick);
+  free(m->prefix.user);
+  free(m->prefix.host);
+
+  free(m->command);
+  for(int i = 0; i < MAX_ARGS; i++) {
+    free(m->args[i]);
+  }
+  free(m->trailing);
+
   *m = (Message){};
 }
 

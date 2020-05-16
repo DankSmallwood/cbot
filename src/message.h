@@ -15,7 +15,6 @@ typedef struct {
   } tags[MAX_TAGS];
 
   struct {
-    char *servername;
     char *nick;
     char *user;
     char *host;
@@ -24,8 +23,6 @@ typedef struct {
   char *command;
   char *args[MAX_ARGS];
   char *trailing;
-
-  char *_nocapture;
 } Message;
 
 char *dup(const char *s, int len);

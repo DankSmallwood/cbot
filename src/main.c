@@ -13,7 +13,6 @@ void parse_message(char *raw) {
     printf("  %s=%s\n", m.tags[i].key, m.tags[i].value);
   }
   printf("Prefix:\n");
-  printf("  servername: %s\n", m.prefix.servername);
   printf("  nick: %s\n", m.prefix.nick);
   printf("  user: %s\n", m.prefix.user);
   printf("  host: %s\n", m.prefix.host);
@@ -28,7 +27,7 @@ void parse_message(char *raw) {
 }
 
 char *test_messages[] = {
-  "@badge-info=subscriber/1;badges=subscriber/0;color=;display-name=DinkSmaIIwood;emote-sets=0,97129,111925;mod=0;subscriber=1;user-type= :tmi.twitch.tv USERSTATE #misterscoot",
+  "@badge-info=subscriber/1;badges=subscriber/0;color=;display-name=DinkSmaIIwood;emote-sets=0,97129,111925;mod=0;subscriber=1;user-type= :tmitest-test.twitch.tv USERSTATE #misterscoot",
   "@badge-info=founder/34;badges=moderator/1,founder/0,premium/1;color=#8A2BE2;display-name=FatalPierce;emote-only=1;emotes=300462338:0-9;flags=;id=a6ec9527-63bb-47e1-9668-8ddbdf2607ea;mod=1;room-id=100327976;subscriber=0;tmi-sent-ts=1589506867207;turbo=0;user-id=83894115;user-type=mod :fatalpierce!fatalpierce@fatalpierce.tmi.twitch.tv PRIVMSG #misterscoot :gloopdRock",
   ":nick COMMAND",
   ":nick!user COMMAND",
