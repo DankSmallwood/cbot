@@ -15,7 +15,6 @@
 #define PORT 9998
 #define MAX_CHANNELS 16
 
-#define SAY(sock,msg) send(sock, msg, strlen(msg), 0)
 
 
 enum {
@@ -34,6 +33,8 @@ typedef struct {
   char *host;
   char *channels[MAX_CHANNELS];
 } Client;
+
+
 
 typedef void(*ClientCommand)(Client *c, Message *m);
 
@@ -223,7 +224,10 @@ void client_user(Client *c, Message *m) {
 
 
 void client_join(Client *c, Message *m) {
-  if(m->args[0][0] != '#') return;
+  if(!message_is_channel_valid(m->args[0])) {
+    say(c->sock, ":the.server 403 %s :Invalid channel name\r\n", c->nick);
+    return;
+  }
 
   int empty_slot = -1;
   switch(c->status) {
@@ -260,7 +264,7 @@ void client_part(Client *c, Message *m) {
   case CLIENT_STATUS_OK:
     for(int i = 0; i < MAX_CHANNELS; i++) {
       if(strcasecmp(m->args[0], c->channels[i])) continue;
-      broadcast(c, m->args[0],
+      broadcast(NULL, m->args[0],
           ":%s!%s@%s PART %s",
           c->nick, c->user, c->host,
           m->args[0]);

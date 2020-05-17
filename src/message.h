@@ -34,5 +34,6 @@ bool message_tostring(Message *m, char *dst, size_t n);
 void message_free(Message *m);
 
 bool message_is_nick_valid(char *nick);
+bool message_is_channel_valid(char *chan);
 
 #endif

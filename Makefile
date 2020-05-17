@@ -12,7 +12,7 @@ CC=gcc
 
 LIBS=-lpcre2-8
 
-CFLAGS_debug=-g
+CFLAGS_debug=-gdwarf-2 -g3
 CFLAGS_release=-O3
 CFLAGS=-Wall -std=c11 -Isrc -I$(BUILDDIR)/$(PROFILE) $(CFLAGS_$(PROFILE))
 

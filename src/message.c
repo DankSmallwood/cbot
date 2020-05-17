@@ -45,14 +45,14 @@ CAPTURE_GROUPS
 NUM_CAPTURE_GROUPS
 };
 
-#define ADDRESS "((\\d{1,3}\\.){3}(\\d{1,3}))"
-#define HNAME "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?+)"
-#define HOSTNAME "("HNAME"(\\."HNAME")++)"
-#define HOST "("ADDRESS"|"HOSTNAME")"
+#define ADDRESS_PATTERN "((\\d{1,3}\\.){3}(\\d{1,3}))"
+#define HNAME_PATTERN "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?+)"
+#define HOSTNAME_PATTERN "("HNAME_PATTERN"(\\."HNAME_PATTERN")++)"
+#define HOST_PATTERN "("ADDRESS_PATTERN"|"HOSTNAME_PATTERN")"
 
-#define NICK "([a-zA-Z][a-zA-Z0-9\\-\\[\\]\\\\\\`\\^\\{\\}]*+)"
+#define NICK_PATTERN "([a-zA-Z][a-zA-Z0-9\\-\\[\\]\\\\\\`\\^\\{\\}]*+)"
+#define CHANNEL_PATTERN "([#&][^, \a]{1,200}+)"
 
-static PCRE2_SPTR nick_pattern = (PCRE2_SPTR)"^"NICK"$";
 static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
   "^"
 
@@ -64,7 +64,7 @@ static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
       "(" // Vendor
         "\\+"
         "(?<tag_vendor>"
-          HOST
+          HOST_PATTERN
         ")"
         "/"
       ")?"
@@ -85,7 +85,7 @@ static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
     "("
       ":"
       "(?<prefix_hostonly>"
-        HOST
+        HOST_PATTERN
       ")"
       " "
     ")"
@@ -95,7 +95,7 @@ static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
       ":"
       "(?<prefix_nick>"
         //"[^@!\\. ]++"
-        NICK
+        NICK_PATTERN
       ")"
       "("
         "!"
@@ -106,7 +106,7 @@ static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
       "("
         "@"
         "(?<prefix_host>"
-          HOST
+          HOST_PATTERN
         ")"
       ")?"
       " "
@@ -317,19 +317,31 @@ bool message_tostring(Message *m, char *dst, size_t n) {
 
 
 
-bool message_is_nick_valid(char *nick) {
-  pcre2_code *regex = NULL;
-
-  if(!regex) {
-    regex = compile(nick_pattern);
-    if(!regex) exit(EXIT_FAILURE);
+static bool validate(pcre2_code **regex, PCRE2_SPTR pattern, char *subject) {
+  if(!*regex) {
+    *regex = compile(pattern);
+    if(!*regex) exit(EXIT_FAILURE);
   }
 
-  pcre2_match_data *match = pcre2_match_data_create_from_pattern(regex, NULL);
-  int ret = pcre2_match(regex, (PCRE2_SPTR)nick, strlen(nick), 0, 0, match, NULL);
+  pcre2_match_data *match = pcre2_match_data_create_from_pattern(*regex, NULL);
+  int ret = pcre2_match(*regex, (PCRE2_SPTR)subject, strlen(subject), 0, 0, match, NULL);
 
   pcre2_match_data_free(match);
   return ret >= 1;
+}
+
+
+
+bool message_is_nick_valid(char *nick) {
+  static pcre2_code *regex = NULL;
+  return validate(&regex, (PCRE2_SPTR)"^"NICK_PATTERN"$", nick);
+}
+
+
+
+bool message_is_channel_valid(char *chan) {
+  static pcre2_code *regex = NULL;
+  return validate(&regex, (PCRE2_SPTR)"^"CHANNEL_PATTERN"$", chan);
 }
 
 
