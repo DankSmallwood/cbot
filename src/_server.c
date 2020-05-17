@@ -209,10 +209,10 @@ void client_user(Client *c, Message *m) {
     replace(&c->host, strdup(m->args[1]));
     c->status = CLIENT_STATUS_OK;
 
-    say(c->sock, ":the.server 001 :You\r\n");
-    say(c->sock, ":the.server 002 :are\r\n");
-    say(c->sock, ":the.server 003 :now\r\n");
-    say(c->sock, ":the.server 004 :connected\r\n");
+    say(c->sock, ":the.server 001 %s :You\r\n", c->nick);
+    say(c->sock, ":the.server 002 %s :are\r\n", c->nick);
+    say(c->sock, ":the.server 003 %s :now\r\n", c->nick);
+    say(c->sock, ":the.server 004 %s :connected\r\n", c->nick);
     break;
 
   default:
@@ -239,12 +239,11 @@ void client_join(Client *c, Message *m) {
     // No free slots
     if(empty_slot == -1) return;
 
-    broadcast(c, m->args[0],
+    c->channels[empty_slot] = strdup(m->args[0]);
+    broadcast(NULL, m->args[0],
         ":%s!%s@%s JOIN %s\r\n",
         c->nick, c->user, c->host,
         m->args[0]);
-
-    c->channels[empty_slot] = strdup(m->args[0]);
     break;
 
   default:
@@ -290,16 +289,10 @@ void client_privmsg(Client *c, Message *m) {
 
   switch(c->status) {
   case CLIENT_STATUS_OK:
-    for(int i = 0; i < num_clients; i++) {
-      if(c == &clients[i] || clients[i].status != CLIENT_STATUS_OK) continue;
-
-      for(int j = 0; j < MAX_CHANNELS; j++) {
-        if(!clients[i].channels[j]) continue;
-        if(!strcasecmp(m->args[0], clients[i].channels[j])) {
-          send(clients[i].sock, raw_msg, strlen(raw_msg), 0);
-        }
-      }
-    }
+    broadcast(c, m->args[0],
+        ":%s!%s@%s PRIVMSG %s :%s\r\n",
+        c->nick, c->user, c->host,
+        m->args[0], m->args[1]);
     break;
 
   default:
