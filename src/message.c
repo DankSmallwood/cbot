@@ -53,99 +53,102 @@ NUM_CAPTURE_GROUPS
 #define NICK_PATTERN "([a-zA-Z][a-zA-Z0-9\\-\\[\\]\\\\\\`\\^\\{\\}]*+)"
 #define CHANNEL_PATTERN "([#&][^, \a]{1,200}+)"
 
-static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
-  "^"
-
-  // Tags
-  "("
-    "@"
-    "("
-      "(?<=[;@])"
-      "(" // Vendor
-        "\\+"
-        "(?<tag_vendor>"
-          HOST_PATTERN
-        ")"
-        "/"
-      ")?"
-      "(?<tag_key>"
-        "[0-9a-zA-Z-]++"
-      ")"
-      "="
-      "(?<tag_value>"
-        "[^\\0\\r\\n; ]*+"
-      ")"
-      "(?C"TO_STR(CALLOUT_TAG)")"
-      ";?"
-    ")++"
-    " "
-  ")?"
-
-  "("
-    "("
-      ":"
-      "(?<prefix_hostonly>"
-        HOST_PATTERN
-      ")"
-      " "
-    ")"
-    "(?C"TO_STR(CALLOUT_PREFIX_HOSTONLY)")"
-    "|"
-    "("
-      ":"
-      "(?<prefix_nick>"
-        //"[^@!\\. ]++"
-        NICK_PATTERN
-      ")"
-      "("
-        "!"
-        "(?<prefix_user>"
-          "[^@ ]++"
-        ")"
-      ")?"
-      "("
-        "@"
-        "(?<prefix_host>"
-          HOST_PATTERN
-        ")"
-      ")?"
-      " "
-      "(?C"TO_STR(CALLOUT_PREFIX)")"
-    ")"
-  ")?"
-
-  // Command
-  "("
-    "(?<command>"
-      "("
-        "[a-zA-Z]++"
-      ")"
-      "|"
-      "("
-        "[0-9]++"
-      ")"
-    ")"
-    "(?C"TO_STR(CALLOUT_COMMAND)")"
-    "(\\s++|$)"
+#define TAGS_PATTERN \
+  "(" \
+    "@" \
+    "(" \
+      "(?<=[;@])" \
+      "(" \
+        "\\+" \
+        "(?<tag_vendor>" \
+          HOST_PATTERN \
+        ")" \
+        "/" \
+      ")?" \
+      "(?<tag_key>" \
+        "[0-9a-zA-Z-]++" \
+      ")" \
+      "=" \
+      "(?<tag_value>" \
+        "[^\\0\\r\\n; ]*+" \
+      ")" \
+      "(?C"TO_STR(CALLOUT_TAG)")" \
+      ";?" \
+    ")++" \
+    " " \
   ")"
 
-  // Arguments
-  "("
-    ":?"
-    "(?<argument>"
-      "("
-        "(?<=:)[^\\r\\n]++"
-      ")"
-      "|"
-      "("
-        "\\S++"
-      ")"
-    ")"
-    "(?C"TO_STR(CALLOUT_ARGUMENT)")"
-    " ?+"
+#define PREFIX_PATTERN \
+  "(" \
+    "(" \
+      ":" \
+      "(?<prefix_hostonly>" \
+        HOST_PATTERN \
+      ")" \
+      " " \
+    ")" \
+    "(?C"TO_STR(CALLOUT_PREFIX_HOSTONLY)")" \
+    "|" \
+    "(" \
+      ":" \
+      "(?<prefix_nick>" \
+        NICK_PATTERN \
+      ")" \
+      "(" \
+        "!" \
+        "(?<prefix_user>" \
+          "[^@ ]++" \
+        ")" \
+      ")?" \
+      "(" \
+        "@" \
+        "(?<prefix_host>" \
+          HOST_PATTERN \
+        ")" \
+      ")?" \
+      " " \
+      "(?C"TO_STR(CALLOUT_PREFIX)")" \
+    ")" \
+  ")"
+
+#define COMMAND_PATTERN \
+  "(" \
+    "(?<command>" \
+      "(" \
+        "[a-zA-Z]++" \
+      ")" \
+      "|" \
+      "(" \
+        "[0-9]++" \
+      ")" \
+    ")" \
+    "(?C"TO_STR(CALLOUT_COMMAND)")" \
+    "(\\s++|$)" \
+  ")"
+
+#define ARGUMENTS_PATTERN \
+  "(" \
+    ":?" \
+    "(?<argument>" \
+      "(" \
+        "(?<=:)[^\\r\\n]++" \
+      ")" \
+      "|" \
+      "(" \
+        "\\S++" \
+      ")" \
+    ")" \
+    "(?C"TO_STR(CALLOUT_ARGUMENT)")" \
+    " ?+" \
   "){0,15}+"
 
-  "(\\r\\n)?"
+static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
+  "^"
+  TAGS_PATTERN"?"
+  PREFIX_PATTERN"?"
+  COMMAND_PATTERN
+  ARGUMENTS_PATTERN
+  "\\r\\n"
   "$"
 ;
 
