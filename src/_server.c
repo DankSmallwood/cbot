@@ -12,13 +12,20 @@
 #include "message.h"
 #include "util.h"
 
+
+
 #define PORT 9998
+#define SERVER_HOST "the.server"
 #define MAX_CHANNELS 16
+#define MAX_CLIENTS 128
+
+#define PREFIX_FMT ":%s!%s@%s "
+#define PREFIX_MEMB(c) c->nick, c->user, c->host
 
 
 
 enum {
-  CLIENT_STATUS_DISCONNECTED,
+  CLIENT_STATUS_DISCONNECTED = 0,
   CLIENT_STATUS_WAIT_NICK,
   CLIENT_STATUS_WAIT_USER,
   CLIENT_STATUS_OK
@@ -39,8 +46,8 @@ typedef struct {
 typedef void(*ClientCommand)(Client *c, Message *m);
 
 Client *client_new();
-void client_free(int idx);
-int client_service(int idx);
+void client_free(Client *c);
+int client_service(Client *c);
 bool client_in_channel(Client *c, char *channel);
 
 #define COMMANDS \
@@ -49,7 +56,7 @@ X(user, 4) \
 X(join, 1) \
 X(part, 1) \
 X(privmsg, 2) \
-X(quit, 1)
+X(quit, 0)
 
 #define X(c,...) void client_##c(Client *c, Message *m);
 COMMANDS
@@ -65,17 +72,16 @@ COMMANDS
 #undef X
 };
 
-int num_clients = 0;
-Client *clients = NULL;
+Client clients[MAX_CLIENTS];
 
 
 
 int read_line(int fd, char *buffer, size_t n);
 void inspect(char *s);
 
-void say(int fd, char *fmt, ...);
-void say_str(int fd, char *msg, size_t len);
-void say_message(int fd, Message *m);
+void say(Client *c, char *fmt, ...);
+void say_str(Client *c, char *msg, size_t len);
+void say_message(Client *c, Message *m);
 
 void broadcast(Client *except, char *channel, char *fmt, ...);
 void broadcast_str(Client *except, char *channel, char *msg, size_t len);
@@ -87,16 +93,15 @@ void broadcast_message(Client *except, char *channel, Message *m);
 Client *client_new() {
   Client *c = NULL;
 
-  for(int i = 0; i < num_clients; i++) {
+  for(int i = 0; i < MAX_CLIENTS; i++) {
     if(clients[i].status != CLIENT_STATUS_DISCONNECTED) continue;
     c = &clients[i];
     break;
   }
 
   if(!c) {
-    num_clients++;
-    clients = realloc(clients, sizeof(Client)*num_clients);
-    c = &clients[num_clients-1];
+    printf("Max clients reached!\n");
+    return NULL;
   }
 
   *c = (Client){};
@@ -105,10 +110,7 @@ Client *client_new() {
 
 
 
-void client_free(int idx) {
-  if(idx >= num_clients) return;
-
-  Client *c = &clients[idx];
+void client_free(Client *c) {
   free(c->nick);
   free(c->user);
   free(c->host);
@@ -128,9 +130,8 @@ bool client_in_channel(Client *c, char *channel) {
 
 
 
-int client_service(int idx) {
-  if(idx >= num_clients || clients[idx].status == CLIENT_STATUS_DISCONNECTED) return -1;
-  Client *c = &clients[idx];
+int client_service(Client *c) {
+  if(c->status == CLIENT_STATUS_DISCONNECTED) return -1;
 
   static char buffer[MESSAGE_MAX_LEN+1];
   if(read_line(c->sock, buffer, MESSAGE_MAX_LEN) < 1) return -1;
@@ -154,46 +155,33 @@ done:
 
 
 void client_nick(Client *c, Message *m) {
-  bool nick_in_use = false;
-
   switch(c->status) {
   case CLIENT_STATUS_WAIT_NICK:
   case CLIENT_STATUS_OK:
     if(!message_is_nick_valid(m->args[0])) {
-      say(c->sock, "432 %s :Erroneous nickname\r\n", m->args[0]);
+      say(c, "432 %s :Erroneous nickname", m->args[0]);
       break;
     }
 
-    for(int i = 0; i < num_clients; i++) {
-      if(clients[i].status != CLIENT_STATUS_OK &&
-          clients[i].status != CLIENT_STATUS_WAIT_USER) {
-        continue;
+    for(Client *o = clients; o < clients + MAX_CLIENTS; o++) {
+      if(o->status >= CLIENT_STATUS_WAIT_USER && !strcasecmp(m->args[0], o->nick)) {
+        say(c, "%s 433 :Nickname already in use", m->args[0]);
+        return;
       }
-      
-      if(!strcasecmp(m->args[0], clients[i].nick)) {
-        nick_in_use = true;
-        break;
-      }
-    }
-
-    if(nick_in_use) {
-      say(c->sock, "%s 433 :Nickname already in use\r\n", m->args[0]);
-      break;
     }
 
     if(c->status == CLIENT_STATUS_WAIT_NICK) {
       replace(&c->nick, strdup(m->args[0]));
       c->status = CLIENT_STATUS_WAIT_USER;
-      break;
+    } else {
+      for(int i = 0; i < MAX_CHANNELS; i++) {
+        if(!c->channels[i]) continue;
+        broadcast(c, c->channels[i],
+            ":%s NICK %s\r\n",
+            c->nick, m->args[0]);
+      }
+      replace(&c->nick, strdup(m->args[0]));
     }
-
-    for(int i = 0; i < MAX_CHANNELS; i++) {
-      if(!c->channels[i]) continue;
-      broadcast(c, c->channels[i],
-          ":%s NICK %s\r\n",
-          c->nick, m->args[0]);
-    }
-    replace(&c->nick, strdup(m->args[0]));
     break;
 
   default:
@@ -210,10 +198,10 @@ void client_user(Client *c, Message *m) {
     replace(&c->host, strdup(m->args[1]));
     c->status = CLIENT_STATUS_OK;
 
-    say(c->sock, ":the.server 001 %s :You\r\n", c->nick);
-    say(c->sock, ":the.server 002 %s :are\r\n", c->nick);
-    say(c->sock, ":the.server 003 %s :now\r\n", c->nick);
-    say(c->sock, ":the.server 004 %s :connected\r\n", c->nick);
+    say(c, ":"SERVER_HOST" 001 %s :You", c->nick);
+    say(c, ":"SERVER_HOST" 002 %s :are", c->nick);
+    say(c, ":"SERVER_HOST" 003 %s :now", c->nick);
+    say(c, ":"SERVER_HOST" 004 %s :connected", c->nick);
     break;
 
   default:
@@ -225,7 +213,7 @@ void client_user(Client *c, Message *m) {
 
 void client_join(Client *c, Message *m) {
   if(!message_is_channel_valid(m->args[0])) {
-    say(c->sock, ":the.server 403 %s :Invalid channel name\r\n", c->nick);
+    say(c, ":"SERVER_HOST" 403 %s :Invalid channel name", c->nick);
     return;
   }
 
@@ -263,9 +251,9 @@ void client_part(Client *c, Message *m) {
   switch(c->status) {
   case CLIENT_STATUS_OK:
     for(int i = 0; i < MAX_CHANNELS; i++) {
-      if(strcasecmp(m->args[0], c->channels[i])) continue;
+      if(!c->channels[i] || strcasecmp(m->args[0], c->channels[i])) continue;
       broadcast(NULL, m->args[0],
-          ":%s!%s@%s PART %s",
+          ":%s!%s@%s PART %s\r\n",
           c->nick, c->user, c->host,
           m->args[0]);
       replace(&c->channels[i], NULL);
@@ -307,7 +295,20 @@ void client_privmsg(Client *c, Message *m) {
 
 
 void client_quit(Client *c, Message *m) {
+  for(int i = 0; i < MAX_CHANNELS; i++) {
+    if(!c->channels[i]) continue;
+    broadcast(c, c->channels[i],
+        ":%s!%s@%s QUIT :%s\r\n",
+        c->nick, c->user, c->host,
+        m->num_args >= 1 ? m->args[0] : "Client disconnected");
+  }
+
+  say(c, ":%s!%s@%s QUIT :%s",
+        c->nick, c->user, c->host,
+        m->num_args >= 1 ? m->args[0] : "Client disconnected");
+  c->status = CLIENT_STATUS_DISCONNECTED;
 }
+
 
 
 int read_line(int fd, char *buffer, size_t n) {
@@ -359,41 +360,42 @@ void inspect(char *s) {
 
 
 
-void say_str(int fd, char *msg, size_t len) {
-  send(fd, msg, len, 0);
+void say_str(Client *c, char *msg, size_t len) {
+  send(c->sock, msg, len, 0);
 }
 
 
 
-void say(int fd, char *fmt, ...) {
+void say(Client *c, char *fmt, ...) {
   static char buffer[MESSAGE_MAX_LEN+1];
 
   va_list args;
   va_start(args, fmt);
   int len = vsnprintf(buffer, MESSAGE_MAX_LEN+1, fmt, args);
+  len += snprintf(buffer+len, MESSAGE_MAX_LEN+1-len, "\r\n");
   va_end(args);
 
-  say_str(fd, buffer, len);
+  say_str(c, buffer, len);
 }
 
 
 
-void say_message(int fd, Message *m) {
+void say_message(Client *c, Message *m) {
   static char buffer[MESSAGE_MAX_LEN+1];
   message_tostring(m, buffer, MESSAGE_MAX_LEN);
 
-  say_str(fd, buffer, strlen(buffer));
+  say_str(c, buffer, strlen(buffer));
 }
 
 
 
 void broadcast_str(Client *except, char *channel, char *msg, size_t len) {
-  for(int i = 0; i < num_clients; i++) {
-    if(&clients[i] == except || clients[i].status != CLIENT_STATUS_OK) continue;
-    for(int j = 0; j < MAX_CHANNELS; j++) {
-      if(!clients[i].channels[j]) continue;
-      if(!strcasecmp(channel, clients[i].channels[j])) {
-        send(clients[i].sock, msg, len, 0);
+  for(Client *o = clients; o < clients + MAX_CLIENTS; o++) {
+    if(o == except || o->status != CLIENT_STATUS_OK) continue;
+    for(char **chan = o->channels; chan < o->channels + MAX_CHANNELS; chan++) {
+      if(!chan) continue;
+      if(!strcasecmp(channel, *chan)) {
+        send(o->sock, msg, len, 0);
         break;
       }
     }
@@ -453,6 +455,7 @@ int main(int argc, char *argv[]) {
   FD_SET(sock, &fdset);
   while(1) {
     fd_set read_fdset = fdset;
+
     DIE_IF(
       select(FD_SETSIZE, &read_fdset, NULL, NULL, NULL) < 0,
       "select");
@@ -477,11 +480,13 @@ int main(int argc, char *argv[]) {
       }
 
       // Service existing connection
-      for(int j = 0; j < num_clients; j++) {
+      for(int j = 0; j < MAX_CLIENTS; j++) {
         if(clients[j].status == CLIENT_STATUS_DISCONNECTED || clients[j].sock != i) continue;
-        if(client_service(j) < 0) {
-          client_free(j);
-          FD_CLR(clients[j].sock, &fdset);
+        Client *c = &clients[j];
+        if(client_service(c) < 0 || c->status == CLIENT_STATUS_DISCONNECTED) {
+          FD_CLR(c->sock, &fdset);
+          close(c->sock);
+          client_free(c);
         }
         break;
       }
