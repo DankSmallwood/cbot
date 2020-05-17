@@ -3,8 +3,9 @@
 
 #include <stdbool.h>
 
-#define MAX_ARGS 15
-#define MAX_TAGS 32
+#define MESSAGE_MAX_LEN  2048
+#define MESSAGE_MAX_ARGS 16
+#define MESSAGE_MAX_TAGS 64
 
 typedef struct {
   bool valid;
@@ -12,7 +13,8 @@ typedef struct {
   struct {
     char *key;
     char *value;
-  } tags[MAX_TAGS];
+  } tags[MESSAGE_MAX_TAGS];
+  size_t num_tags;
 
   struct {
     char *nick;
@@ -21,13 +23,16 @@ typedef struct {
   } prefix;
 
   char *command;
-  char *args[MAX_ARGS];
-  char *trailing;
+  char *args[MESSAGE_MAX_ARGS];
+  size_t num_args;
 } Message;
 
-char *dup(const char *s, int len);
 void replace(char **old, char *new);
+
 Message message_new(char *s);
+bool message_tostring(Message *m, char *dst, size_t n);
 void message_free(Message *m);
+
+bool message_is_nick_valid(char *nick);
 
 #endif

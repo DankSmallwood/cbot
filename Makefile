@@ -18,25 +18,35 @@ CFLAGS=-Wall -std=c11 -Isrc -I$(BUILDDIR)/$(PROFILE) $(CFLAGS_$(PROFILE))
 
 rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 
-SRC=$(subst src/,,$(call rwildcard,src,*.c))
+ALL_SRC=$(subst src/,,$(call rwildcard,src,*.c))
+ENTRY_SRC=$(subst src/,,$(wildcard src/_*.c))
+SRC=$(filter-out $(ENTRY_SRC),$(ALL_SRC))
 OBJ=$(patsubst %.c,$(BUILDDIR)/$(PROFILE)/%.o,$(SRC))
 OBJ_NOMAIN=$(filter-out build/release/main.o,$(OBJ))
 
 GEN_Y=$(subst src/,,$(call rwildcard,src,*.y))
 GEN_Z=$(patsubst %.y,$(BUILDDIR)/$(PROFILE)/%.z,$(GEN_Y))
 
-DEPFILES:=$(SRC:%.c=$(DEPDIR)/%.d)
+.PHONY:
+dump:
+	@echo $(SRC)
+
+DEPFILES:=$(ALL_SRC:%.c=$(DEPDIR)/%.d)
 $(DEPFILES):
 -include $(wildcard $(DEPFILES))
 
-$(TARGET): $(GEN_Z) $(OBJ)
+$(TARGET): $(GEN_Z) $(OBJ) $(BUILDDIR)/$(PROFILE)/_main.o
 	@echo $@
-	@$(CC) $(CFLAGS) $(OBJ) $(LIBS) -o $@
+	@$(CC) $(CFLAGS) $(filter %.o,$^) $(LIBS) -o $@
 
 $(TEST_TARGET): $(OBJ_NOMAIN) test/test.c $(wildcard test/*.x)
 	@echo $@
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -Isrc test/test.c $(OBJ_NOMAIN) $(LIBS) -o $@
+
+$(BUILDDIR)/$(PROFILE)/server: $(OBJ) $(BUILDDIR)/$(PROFILE)/_server.o
+	@echo $@
+	@$(CC) -Isrc $(CFLAGS) $(filter %.o,$^) $(LIBS) -o $@
 
 .PHONY:
 test: $(TEST_TARGET)

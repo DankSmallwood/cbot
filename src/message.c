@@ -6,16 +6,7 @@
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 #include "message.h"
-
-#define ADDRESS "((\\d{1,3}\\.){3}(\\d{1,3}))"
-#define HNAME "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?)"
-//#define HNAME "([0-9a-zA-Z]+)"
-//#define HOSTNAME "("HNAME"(\\."HNAME")*)"
-#define HOSTNAME HNAME
-//#define HOST "("ADDRESS"|"HOSTNAME")"
-#define HOST HNAME
-
-#define NICK "([a-zA-Z][a-zA-Z0-9-\\[\\]\\\\\\`\\^\\{\\}]*)"
+#include "util.h"
 
 #define CALLOUT_TAG 1
 #define CALLOUT_PREFIX_HOSTONLY 2
@@ -36,8 +27,7 @@ X(prefix_user) \
 X(prefix_host) \
 X(prefix_hostonly) \
 X(command) \
-X(argument) \
-X(trailing)
+X(argument)
 
 struct {
   char *name;
@@ -55,65 +45,119 @@ CAPTURE_GROUPS
 NUM_CAPTURE_GROUPS
 };
 
-static PCRE2_SPTR regex_pattern = (PCRE2_SPTR)
+#define ADDRESS "((\\d{1,3}\\.){3}(\\d{1,3}))"
+#define HNAME "([0-9a-zA-Z]([0-9a-zA-Z-]*[0-9a-zA-Z])?+)"
+#define HOSTNAME "("HNAME"(\\."HNAME")++)"
+#define HOST "("ADDRESS"|"HOSTNAME")"
+
+#define NICK "([a-zA-Z][a-zA-Z0-9\\-\\[\\]\\\\\\`\\^\\{\\}]*+)"
+
+static PCRE2_SPTR nick_pattern = (PCRE2_SPTR)"^"NICK"$";
+static PCRE2_SPTR message_pattern = (PCRE2_SPTR)
   "^"
 
   // Tags
-  "(@"
-    "((?<=[;@])"
-      "(\\+(?<tag_vendor>"HOST")/)?"
-      "(?<tag_key>[0-9a-zA-Z-]++)"
+  "("
+    "@"
+    "("
+      "(?<=[;@])"
+      "(" // Vendor
+        "\\+"
+        "(?<tag_vendor>"
+          HOST
+        ")"
+        "/"
+      ")?"
+      "(?<tag_key>"
+        "[0-9a-zA-Z-]++"
+      ")"
       "="
-      "(?<tag_value>[^; ]*+)"
+      "(?<tag_value>"
+        "[^\\0\\r\\n; ]*+"
+      ")"
       "(?C"TO_STR(CALLOUT_TAG)")"
-    "[; ])++"
+      ";?"
+    ")++"
+    " "
   ")?"
 
-  // Prefix
   "("
-    "(:(?<prefix_hostonly>[^@! ]++) )(?C"TO_STR(CALLOUT_PREFIX_HOSTONLY)")|"
-    "(:"
-      "(?<prefix_nick>[^@!\\. ]++)"
-      "(!(?<prefix_user>[^@ ]++))?"
-      "(@(?<prefix_host>[^ ]++))?"
-    " (?C"TO_STR(CALLOUT_PREFIX)"))"
+    "("
+      ":"
+      "(?<prefix_hostonly>"
+        HOST
+      ")"
+      " "
+    ")"
+    "(?C"TO_STR(CALLOUT_PREFIX_HOSTONLY)")"
+    "|"
+    "("
+      ":"
+      "(?<prefix_nick>"
+        //"[^@!\\. ]++"
+        NICK
+      ")"
+      "("
+        "!"
+        "(?<prefix_user>"
+          "[^@ ]++"
+        ")"
+      ")?"
+      "("
+        "@"
+        "(?<prefix_host>"
+          HOST
+        ")"
+      ")?"
+      " "
+      "(?C"TO_STR(CALLOUT_PREFIX)")"
+    ")"
   ")?"
-  
-  // Command, arguments and trailing
-  "((?<command>([a-zA-Z]++)|([0-9]++))(?C"TO_STR(CALLOUT_COMMAND)")(\\s++|$))"
-  "((?<argument>[^:]\\S++)(?C"TO_STR(CALLOUT_ARGUMENT)")\\s++|$)*+"
-  "(:(?<trailing>.*+)(?C"TO_STR(CALLOUT_TRAILING)"))?"
-  
+
+  // Command
+  "("
+    "(?<command>"
+      "("
+        "[a-zA-Z]++"
+      ")"
+      "|"
+      "("
+        "[0-9]++"
+      ")"
+    ")"
+    "(?C"TO_STR(CALLOUT_COMMAND)")"
+    "(\\s++|$)"
+  ")"
+
+  // Arguments
+  "("
+    ":?"
+    "(?<argument>"
+      "("
+        "(?<=:)[^\\r\\n]++"
+      ")"
+      "|"
+      "("
+        "\\S++"
+      ")"
+    ")"
+    "(?C"TO_STR(CALLOUT_ARGUMENT)")"
+    " ?+"
+  "){0,15}+"
+
+  "(\\r\\n)?"
   "$"
 ;
 
-pcre2_code *regex = NULL;
 
-char *dup(const char *s, int len) {
-  if(!s || len <= 0) return NULL;
-
-  char *n = malloc(len+1);
-  strncpy(n,s,len);
-  n[len]=0;
-  return n;
-}
-
-void replace(char **old, char *new) {
-  free(*old);
-  *old = new;
-}
-
-static void compile() {
-  if(regex) return;
-
-  printf("%s\n", (char *)regex_pattern);
-
+static pcre2_code *compile(PCRE2_SPTR pattern) {
   int errornumber;
   PCRE2_SIZE erroroffset;
-  regex = pcre2_compile(
-      regex_pattern,
+
+  pcre2_code *regex = pcre2_compile(
+      pattern,
       PCRE2_ZERO_TERMINATED,
-      PCRE2_DUPNAMES,
+      0,
       &errornumber,
       &erroroffset,
       NULL);
@@ -121,36 +165,11 @@ static void compile() {
     PCRE2_UCHAR buffer[256];
     pcre2_get_error_message(errornumber, buffer, sizeof(buffer));
     printf("Compile error at offset %d: %s\n", (int)erroroffset, buffer);
-    exit(EXIT_FAILURE);
   }
 
-  uint32_t namecount;
-  pcre2_pattern_info(regex, PCRE2_INFO_NAMECOUNT, &namecount);
-
-  uint32_t nameentrysize;
-  pcre2_pattern_info(regex, PCRE2_INFO_NAMEENTRYSIZE, &nameentrysize);
-
-  char *nametable;
-  pcre2_pattern_info(regex, PCRE2_INFO_NAMETABLE, &nametable);
-
-  for(int i = 0; i < namecount; i++) {
-    // TODO: This is really 16-bit, but who has more than 255 named capture groups?
-    int num = *(int8_t *)(nametable + nameentrysize*i + 1);
-    char *name = nametable + nameentrysize*i + 2;
-
-    for(int j = 0; j < NUM_CAPTURE_GROUPS; j++) {
-      if(strcmp(capture_groups[j].name, name)) continue;
-      capture_groups[j].num = num;
-      break;
-    }
-  }
+  return regex;
 }
 
-typedef struct {
-  Message *message;
-  int current_tag;
-  int current_arg;
-} NewMessageState;
 
 
 void get_group(int g, pcre2_callout_block *block, char **start, int *len) {
@@ -160,61 +179,45 @@ void get_group(int g, pcre2_callout_block *block, char **start, int *len) {
 }
 
 
-int callout(pcre2_callout_block *block, void *data) {
-  NewMessageState *state = data;
+
+#define R(cap,dst) \
+  get_group(CAPTURE_GROUP_##cap, block, &start, &len); \
+  new = len > 0 ? strndup(start,len) : NULL; \
+  replace(&m->dst, new);
+static int new_message_callout(pcre2_callout_block *block, void *data) {
+  Message *m = data;
   char *start;
   int len;
+  char *new;
 
   switch(block->callout_number) {
   case CALLOUT_TAG:
-    if(state->current_tag > MAX_TAGS) break;
-
-    get_group(CAPTURE_GROUP_tag_key, block, &start, &len);
-    replace(&state->message->tags[state->current_tag].key, dup(start, len));
-
-    get_group(CAPTURE_GROUP_tag_value, block, &start, &len);
-    replace(&state->message->tags[state->current_tag].value, dup(start, len));
-
-    state->current_tag++;
+    if(m->num_tags < MESSAGE_MAX_TAGS) {
+      R(tag_key, tags[m->num_tags].key);
+      R(tag_value, tags[m->num_tags].value);
+      m->num_tags++;
+    }
     break;
 
   case CALLOUT_PREFIX_HOSTONLY:
-    get_group(CAPTURE_GROUP_prefix_hostonly, block, &start, &len);
-    replace(&state->message->prefix.host, dup(start, len));
-
+    R(prefix_hostonly, prefix.host);
     break;
 
   case CALLOUT_PREFIX:
-    get_group(CAPTURE_GROUP_prefix_nick, block, &start, &len);
-    replace(&state->message->prefix.nick, dup(start, len));
-
-    get_group(CAPTURE_GROUP_prefix_user, block, &start, &len);
-    replace(&state->message->prefix.user, dup(start, len));
-
-    get_group(CAPTURE_GROUP_prefix_host, block, &start, &len);
-    replace(&state->message->prefix.host, dup(start, len));
-
+    R(prefix_nick, prefix.nick);
+    R(prefix_user, prefix.user);
+    R(prefix_host, prefix.host);
     break;
 
   case CALLOUT_COMMAND:
-    get_group(CAPTURE_GROUP_command, block, &start, &len);
-    replace(&state->message->command, dup(start, len));
-
+    R(command, command);
     break;
 
   case CALLOUT_ARGUMENT:
-    if(state->current_arg >= MAX_ARGS) break;
-
-    get_group(CAPTURE_GROUP_argument, block, &start, &len);
-    replace(&state->message->args[state->current_arg], dup(start, len));
-    state->current_arg++;
-
-    break;
-
-  case CALLOUT_TRAILING:
-    get_group(CAPTURE_GROUP_trailing, block, &start, &len);
-    replace(&state->message->trailing, dup(start, len));
-
+    if(m->num_args < MESSAGE_MAX_ARGS) {
+      R(argument, args[m->num_args]);
+      m->num_args++;
+    }
     break;
   }
 
@@ -222,16 +225,43 @@ int callout(pcre2_callout_block *block, void *data) {
 }
 
 
+
 Message message_new(char *s) {
-  compile();
+  static pcre2_code *regex = NULL;
+
+  if(!regex) {
+    regex = compile(message_pattern);
+    if(!regex) exit(EXIT_FAILURE);
+
+    uint32_t namecount;
+    pcre2_pattern_info(regex, PCRE2_INFO_NAMECOUNT, &namecount);
+
+    uint32_t nameentrysize;
+    pcre2_pattern_info(regex, PCRE2_INFO_NAMEENTRYSIZE, &nameentrysize);
+
+    char *nametable;
+    pcre2_pattern_info(regex, PCRE2_INFO_NAMETABLE, &nametable);
+
+    for(int i = 0; i < namecount; i++) {
+      // TODO: This is really 16-bit, but who has more than 255 named capture groups?
+      int num = *(int8_t *)(nametable + nameentrysize*i + 1);
+      char *name = nametable + nameentrysize*i + 2;
+
+      for(int j = 0; j < NUM_CAPTURE_GROUPS; j++) {
+        if(strcmp(capture_groups[j].name, name)) continue;
+        capture_groups[j].num = num;
+        break;
+      }
+    }
+  }
+
   Message m = {};
-  NewMessageState state = { .message = &m };
 
   pcre2_match_context *match_context = pcre2_match_context_create(NULL);
-  pcre2_set_callout(match_context, callout, &state);
+  pcre2_set_callout(match_context, new_message_callout, &m);
   pcre2_match_data *match_data = pcre2_match_data_create_from_pattern(regex, NULL);
 
-  pcre2_match(
+  int ret = pcre2_match(
       regex,
       (PCRE2_SPTR)s,
       strlen(s),
@@ -240,14 +270,72 @@ Message message_new(char *s) {
       match_data,
       match_context);
 
-  m.valid = true;
+  m.valid = ret > 1;
   pcre2_match_data_free(match_data);
   pcre2_match_context_free(match_context);
   return m;
 }
 
+
+
+bool message_tostring(Message *m, char *dst, size_t n) {
+  size_t cursor = 0;
+
+  if(m->num_tags > 0) {
+    cursor += snprintf(dst+cursor, n-cursor, "@");
+    for(int i = 0; i < m->num_tags; i++) {
+      cursor += snprintf(dst+cursor, n-cursor, "%s%s=%s",
+          i > 0 ? ";" : "",
+          m->tags[i].key,
+          m->tags[i].value ? m->tags[i].value : "");
+    }
+    cursor += snprintf(dst+cursor, n-cursor, " ");
+  }
+
+  if(m->prefix.host && !m->prefix.nick && !m->prefix.user) {
+    cursor += snprintf(dst+cursor, n-cursor, ":%s ", m->prefix.host);
+  } else {
+    cursor += snprintf(dst+cursor, n-cursor, ":%s%s%s%s%s ",
+        m->prefix.nick,
+        m->prefix.user ? "!" : "",
+        m->prefix.user ? m->prefix.user : "",
+        m->prefix.host ? "@" : "",
+        m->prefix.host ? m->prefix.host : "");
+  }
+
+  cursor += snprintf(dst+cursor, n-cursor, "%s ", m->command);
+  for(int i = 0; i < m->num_args; i++) {
+    cursor += snprintf(
+        dst+cursor, n-cursor,
+        "%s%s ",
+        strchr(m->args[i], ' ') ? ":" : "",
+        m->args[i]);
+  }
+
+  return true;
+}
+
+
+
+bool message_is_nick_valid(char *nick) {
+  pcre2_code *regex = NULL;
+
+  if(!regex) {
+    regex = compile(nick_pattern);
+    if(!regex) exit(EXIT_FAILURE);
+  }
+
+  pcre2_match_data *match = pcre2_match_data_create_from_pattern(regex, NULL);
+  int ret = pcre2_match(regex, (PCRE2_SPTR)nick, strlen(nick), 0, 0, match, NULL);
+
+  pcre2_match_data_free(match);
+  return ret >= 1;
+}
+
+
+
 void message_free(Message *m) {
-  for(int i = 0; i < MAX_TAGS; i++) {
+  for(int i = 0; i < MESSAGE_MAX_TAGS; i++) {
     free(m->tags[i].key);
     free(m->tags[i].value);
   }
@@ -257,10 +345,9 @@ void message_free(Message *m) {
   free(m->prefix.host);
 
   free(m->command);
-  for(int i = 0; i < MAX_ARGS; i++) {
+  for(int i = 0; i < MESSAGE_MAX_ARGS; i++) {
     free(m->args[i]);
   }
-  free(m->trailing);
 
   *m = (Message){};
 }
